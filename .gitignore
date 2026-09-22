@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+*.json
+!static/*.json
+!railway.json
+
+# Archivos de diseno locales y no de la app
+tarjeta poedagar_Carpeta/
+*.ai
+
+# Sistema y temporales
+.DS_Store
+Thumbs.db
+*.tmp
