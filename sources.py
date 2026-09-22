@@ -42,7 +42,7 @@ def norm_key(text: str) -> str:
 
 def extract_folder_id(value: str) -> str:
     """Acepta el ID de la carpeta o el enlace completo de Drive."""
-    value = (value or "").strip()
+    value = (value or "").strip().strip("\"'").strip()
     m = re.search(r"/folders/([A-Za-z0-9_-]+)", value) or re.search(r"[?&]id=([A-Za-z0-9_-]+)", value)
     return m.group(1) if m else value
 
@@ -199,14 +199,35 @@ class LocalSource:
         return {"kind": self.kind, "folder": str(self.root)}
 
 
+FOLDER_VARS = ("DRIVE_FOLDER_ID", "DRIVE_FOLDER", "DRIVE_FOLDER_URL", "GOOGLE_DRIVE_FOLDER_ID")
+
+
+def env_value(names: tuple[str, ...]) -> str:
+    """Primer valor no vacio entre esos nombres de variable, sin importar mayusculas,
+    guiones o espacios de mas en el nombre (en Railway es facil escribir 'drive_folder_id')."""
+
+    def simple(name: str) -> str:
+        return re.sub(r"[^A-Z0-9]", "", name.upper())
+
+    found = {simple(k): v.strip() for k, v in os.environ.items() if v.strip()}
+    for name in names:
+        if found.get(simple(name)):
+            return found[simple(name)]
+    return ""
+
+
 def make_source_from_env():
-    folder = os.getenv("DRIVE_FOLDER_ID", "").strip()
+    folder = env_value(FOLDER_VARS)
     local = os.getenv("LOCAL_IMAGES_DIR", "").strip()
     if folder:
-        return DriveSource(folder, os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
+        return DriveSource(folder, env_value(("GOOGLE_SERVICE_ACCOUNT_JSON",)))
     if local:
         return LocalSource(local)
-    raise SourceError("Falta configurar DRIVE_FOLDER_ID (la carpeta de Drive con las fotos).")
+    raise SourceError(
+        "Falta configurar DRIVE_FOLDER_ID (la carpeta de Drive con las fotos). "
+        "En Railway: servicio > Variables > New Variable, nombre DRIVE_FOLDER_ID y como valor "
+        "el enlace de la carpeta; luego pulsa Deploy para aplicar el cambio."
+    )
 
 
 # --------------------------------------------------------------------------- Indice

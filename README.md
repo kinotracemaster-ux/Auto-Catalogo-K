@@ -105,3 +105,16 @@ En Railway o en un archivo `.env` local, configura las siguientes variables:
    - *(Opcionales)*: `ACCESS_CODE`, `BRAND_COLOR`, `FOOTER_TEXT`, etc.
 6. Ve a la pestaña **Settings** > **Networking** y haz clic en **Generate Domain** para obtener tu enlace público (ejemplo: `https://auto-catalogo-k-production.up.railway.app`).
 7. ¡Listo! Abre la URL pública y genera tus catálogos.
+
+---
+
+## 🩺 Solución de problemas
+
+**"Falta configurar DRIVE_FOLDER_ID"**: el servidor no ve la variable.
+1. En Railway abre el **servicio** (no el proyecto) > **Variables** y revisa que exista `DRIVE_FOLDER_ID` con el enlace de la carpeta. Si la creaste en *Shared Variables* del proyecto, tienes que compartirla con el servicio.
+2. Después de agregar o cambiar variables, pulsa **Deploy** (Railway deja los cambios pendientes hasta que despliegas).
+3. Si la variable está en otro entorno (por ejemplo `staging`), agrégala también en `production`.
+
+**"No encuentro la carpeta de Drive"**: el ID está mal o la carpeta no está compartida con el `client_email` de la cuenta de servicio (permiso **Lector**).
+
+Para comprobar la conexión sin generar un PDF, abre `https://TU-DOMINIO/api/status`.
