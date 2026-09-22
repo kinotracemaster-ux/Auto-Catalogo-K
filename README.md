@@ -115,6 +115,12 @@ En Railway o en un archivo `.env` local, configura las siguientes variables:
 2. Después de agregar o cambiar variables, pulsa **Deploy** (Railway deja los cambios pendientes hasta que despliegas).
 3. Si la variable está en otro entorno (por ejemplo `staging`), agrégala también en `production`.
 
+**"Falta GOOGLE_SERVICE_ACCOUNT_JSON"**: la app no tiene la llave para leer el Drive.
+1. Si ya tienes una cuenta de servicio (por ejemplo la de TablasK), copia el valor de esa variable desde el otro servicio de Railway.
+2. Si no, créala en [Google Cloud Console](https://console.cloud.google.com/): activa **Google Drive API**, ve a **IAM y administración > Cuentas de servicio > Crear**, entra a la cuenta, pestaña **Claves > Agregar clave > JSON**. Se descarga un archivo `.json`.
+3. Abre ese archivo con el Bloc de notas, copia **todo** el texto (desde `{` hasta `}`) y pégalo como valor de `GOOGLE_SERVICE_ACCOUNT_JSON` en Railway. Luego pulsa **Deploy**.
+4. Comparte la carpeta de fotos con el correo `client_email` de ese JSON (termina en `iam.gserviceaccount.com`), permiso **Lector**.
+
 **"No encuentro la carpeta de Drive"**: el ID está mal o la carpeta no está compartida con el `client_email` de la cuenta de servicio (permiso **Lector**).
 
 Para comprobar la conexión sin generar un PDF, abre `https://TU-DOMINIO/api/status`.

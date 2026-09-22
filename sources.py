@@ -66,12 +66,16 @@ class Match(NamedTuple):
 # --------------------------------------------------------------------------- Drive
 def load_service_account(raw: str | None) -> dict:
     """JSON de la cuenta de servicio: texto JSON, base64 de ese JSON, o ruta por GOOGLE_APPLICATION_CREDENTIALS."""
-    raw = (raw or "").strip()
+    raw = (raw or "").strip().strip("\"'").strip()
     if not raw:
         path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         if path and Path(path).is_file():
             return json.loads(Path(path).read_text(), strict=False)
-        raise SourceError("Falta GOOGLE_SERVICE_ACCOUNT_JSON (el JSON de la cuenta de servicio).")
+        raise SourceError(
+            "Falta GOOGLE_SERVICE_ACCOUNT_JSON (el JSON de la cuenta de servicio). "
+            "En Railway: servicio > Variables > New Variable, nombre GOOGLE_SERVICE_ACCOUNT_JSON y como valor "
+            "el contenido completo del archivo .json de la cuenta de servicio; luego pulsa Deploy."
+        )
     try:
         if raw.startswith("{"):
             return json.loads(raw, strict=False)
@@ -200,6 +204,7 @@ class LocalSource:
 
 
 FOLDER_VARS = ("DRIVE_FOLDER_ID", "DRIVE_FOLDER", "DRIVE_FOLDER_URL", "GOOGLE_DRIVE_FOLDER_ID")
+CREDENTIAL_VARS = ("GOOGLE_SERVICE_ACCOUNT_JSON", "GOOGLE_SERVICE_ACCOUNT", "GOOGLE_CREDENTIALS_JSON", "GOOGLE_CREDENTIALS")
 
 
 def env_value(names: tuple[str, ...]) -> str:
@@ -220,7 +225,7 @@ def make_source_from_env():
     folder = env_value(FOLDER_VARS)
     local = os.getenv("LOCAL_IMAGES_DIR", "").strip()
     if folder:
-        return DriveSource(folder, env_value(("GOOGLE_SERVICE_ACCOUNT_JSON",)))
+        return DriveSource(folder, env_value(CREDENTIAL_VARS))
     if local:
         return LocalSource(local)
     raise SourceError(
