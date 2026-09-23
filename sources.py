@@ -259,6 +259,11 @@ class DriveSource:
             out[root].append(photo)
         return out
 
+    @staticmethod
+    def link(photo: Photo) -> str:
+        """Enlace para descargar la foto original (sirve a cualquiera si la carpeta es publica con enlace)."""
+        return f"https://drive.google.com/uc?id={photo.ref}&export=download"
+
     def fetch(self, photo: Photo) -> bytes:
         r = self._get(f"{self.API}/{photo.ref}", {"alt": "media", "supportsAllDrives": "true"}, timeout=90)
         if r.status_code != 200:
@@ -292,6 +297,10 @@ class LocalSource:
 
     def fetch(self, photo: Photo) -> bytes:
         return Path(photo.ref).read_bytes()
+
+    @staticmethod
+    def link(photo: Photo) -> str:
+        return ""  # las fotos del disco no tienen enlace
 
     def describe(self) -> dict:
         return {"kind": self.kind, "folder": str(self.root)}
