@@ -1,6 +1,7 @@
 """Fuentes de fotos para el catalogo.
 
-- DriveSource: lee una carpeta de Google Drive (y sus subcarpetas) con una cuenta de servicio.
+- DriveSource: lee una carpeta de Google Drive (y sus subcarpetas) con una cuenta de servicio,
+  o con una clave de API si la carpeta esta compartida como "Cualquier persona con el enlace".
 - LocalSource: lee una carpeta del disco (pruebas, o Drive de escritorio).
 
 Regla de busqueda: el nombre del archivo (sin extension) es el codigo del producto.
@@ -71,7 +72,9 @@ def load_service_account(raw: str | None) -> dict:
         path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         if path and Path(path).is_file():
             return json.loads(Path(path).read_text(), strict=False)
-        raise SourceError("Falta GOOGLE_SERVICE_ACCOUNT_JSON (el JSON de la cuenta de servicio).")
+        raise SourceError(
+            "Falta GOOGLE_SERVICE_ACCOUNT_JSON (el JSON de la cuenta de servicio) o GOOGLE_API_KEY (clave de API)."
+        )
     try:
         if raw.startswith("{"):
             return json.loads(raw, strict=False)
@@ -86,10 +89,15 @@ class DriveSource:
     SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
     MAX_FOLDERS = 500
 
-    def __init__(self, folder_id: str, credentials_json: str | None = None, session=None):
+    def __init__(self, folder_id: str, credentials_json: str | None = None, session=None, api_key: str | None = None):
         self.folder_id = extract_folder_id(folder_id)
+        self.api_key = (api_key or "").strip()
         info: dict = {}
-        if session is None:
+        if session is None and self.api_key:
+            import requests
+
+            session = requests.Session()
+        elif session is None:
             from google.auth.transport.requests import AuthorizedSession
             from google.oauth2 import service_account
 
@@ -103,6 +111,8 @@ class DriveSource:
     def _get(self, url: str, params: dict | None = None, timeout: int = 45):
         import requests
 
+        if self.api_key:
+            params = {**(params or {}), "key": self.api_key}
         for attempt in range(3):
             try:
                 r = self.session.get(url, params=params, timeout=timeout)
@@ -122,6 +132,17 @@ class DriveSource:
             detail = r.json().get("error", {}).get("message", "")
         except Exception:  # noqa: BLE001
             detail = (r.text or "")[:200]
+        key_problem = ("api key", "blocked", "has not been used", "is disabled")
+        if self.api_key and any(k in detail.lower() for k in key_problem):
+            return SourceError(
+                "Google rechazo GOOGLE_API_KEY. Revisa que este bien copiada, que tenga habilitada "
+                f"Google Drive API y sin restriccion de sitios web ni de IP. ({detail[:150]})"
+            )
+        if r.status_code in (403, 404) and folder == self.folder_id and self.api_key:
+            return SourceError(
+                "No encuentro la carpeta de Drive. Revisa DRIVE_FOLDER_ID y que este compartida como "
+                '"Cualquier persona con el enlace" (Lector).'
+            )
         if r.status_code == 404 and folder == self.folder_id:
             who = f" con {self.email}" if self.email else " con la cuenta de servicio"
             return SourceError(
@@ -171,6 +192,8 @@ class DriveSource:
         return r.content
 
     def describe(self) -> dict:
+        if self.api_key:
+            return {"kind": self.kind, "folder": self.folder_id, "auth": "api_key"}
         return {"kind": self.kind, "folder": self.folder_id, "service_account": self.email}
 
 
@@ -203,7 +226,11 @@ def make_source_from_env():
     folder = os.getenv("DRIVE_FOLDER_ID", "").strip()
     local = os.getenv("LOCAL_IMAGES_DIR", "").strip()
     if folder:
-        return DriveSource(folder, os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
+        credentials = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+        api_key = os.getenv("GOOGLE_API_KEY", "").strip()
+        if api_key and not credentials and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+            return DriveSource(folder, api_key=api_key)
+        return DriveSource(folder, credentials)
     if local:
         return LocalSource(local)
     raise SourceError("Falta configurar DRIVE_FOLDER_ID (la carpeta de Drive con las fotos).")
