@@ -90,20 +90,22 @@ details[open] summary::after{transform:rotate(-135deg)}
       <input id="access" type="password" autocomplete="off" placeholder="La clave que te dieron">
     </label>
 
+    <label class="field access"><span>Nombre del catálogo</span>
+      <input id="title" type="text" maxlength="80" placeholder="Catálogo"></label>
     <label class="lbl" for="codes">Códigos de los productos</label>
     <textarea id="codes" spellcheck="false" autocapitalize="characters" autocomplete="off" autocorrect="off"
       placeholder="892B-D2&#10;9051-6&#10;1409-C3"></textarea>
     <div class="meta"><span id="count">0 códigos</span><button type="button" class="link" id="clear">Borrar lista</button></div>
-    <p class="hint">Uno por línea. Si quieres un texto debajo de la foto: <code>892B-D2 | Cronógrafo negro $150.000</code></p>
+    <p class="hint">Uno por línea, o pega un texto o una tabla de Excel: de cada línea se toma el código de la primera columna.
+      Si quieres un texto debajo de la foto: <code>892B-D2 | Cronógrafo negro $150.000</code></p>
 
     <details id="opts">
       <summary>Opciones</summary>
       <div class="opts">
-        <label class="field"><span>Título del catálogo</span>
-          <input id="title" type="text" maxlength="80" placeholder="Catálogo"></label>
         <fieldset class="field"><legend>Fotos por hoja</legend>
           <div class="seg" id="seg"></div></fieldset>
         <label class="check"><input type="checkbox" id="showCode" checked> Mostrar el código debajo de cada foto</label>
+        <label class="check"><input type="checkbox" id="showLink" checked> Poner debajo de cada foto un enlace para descargarla</label>
       </div>
     </details>
 
@@ -135,12 +137,29 @@ details[open] summary::after{transform:rotate(-135deg)}
     return n;
   }
 
+  // Igual que line_codes() en app.py: de cada linea, la primera columna
+  const CODE_LIKE = /^(?=.*\d)(?=.*[A-Za-z-])[A-Za-z0-9._-]+$/;
+  function lineCodes(line) {
+    let first, several;
+    if (line.includes('\t')) {
+      const cells = line.split('\t').map(c => c.trim()).filter(Boolean);
+      first = cells[0]; several = cells.length > 1;
+    } else {
+      const words = line.split(/[,;\s]+/).filter(Boolean);
+      if (!words.length) return [];
+      if (words.length > 1 && words.every(w => CODE_LIKE.test(w))) return words;
+      first = words[0]; several = words.length > 1;
+    }
+    if (!first || (several && !/\d/.test(first))) return [];
+    return [first];
+  }
+
   function countCodes(text) {
     const seen = new Set();
     for (let line of text.replace(/\r/g, '\n').split('\n')) {
-      line = line.trim().replace(/^[-•*·"' ]+/, '');
+      line = line.trim().replace(/^[-•*·"' ]+/, '').trim();
       if (!line) continue;
-      const parts = line.includes('|') ? [line.split('|')[0]] : line.split(/[,;\t\s]+/);
+      const parts = line.includes('|') ? [line.split('|')[0]] : lineCodes(line);
       for (const p of parts) { const k = p.trim().replace(/\s+/g, '').toUpperCase(); if (k) seen.add(k); }
     }
     return seen.size;
@@ -272,7 +291,7 @@ details[open] summary::after{transform:rotate(-135deg)}
       const r = await fetch('/api/build', {
         method: 'POST', signal: ctl.signal,
         headers: { 'Content-Type': 'application/json', 'X-Access-Code': $('#access').value },
-        body: JSON.stringify({ codes, title, per_page: perPage, show_code: $('#showCode').checked }),
+        body: JSON.stringify({ codes, title, per_page: perPage, show_code: $('#showCode').checked, show_link: $('#showLink').checked }),
       });
       const data = await r.json().catch(() => ({}));
       if (r.status === 401) { fail('La clave de acceso no es correcta.'); $('#access').focus(); }

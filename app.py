@@ -110,8 +110,33 @@ def authorized(code: str) -> bool:
     return not ACCESS_CODE or hmac.compare_digest((code or "").encode(), ACCESS_CODE.encode())
 
 
+CODE_LIKE = re.compile(r"(?=.*\d)(?=.*[A-Za-z-])[A-Za-z0-9._-]+")  # 892B-D2 si; 150.000, $150.000, Reloj no
+
+
+def line_codes(line: str) -> list[str]:
+    """Codigos de una linea pegada (sin '|'). Se toma la primera columna:
+    - con tabuladores (tabla copiada de Excel/Sheets): la primera celda;
+    - si todas las palabras parecen codigos (892B-D2 9051-6 o 892B-D2, 9051-6): todas;
+    - si no (839B-6 Reloj dorado $150.000): solo la primera.
+    Si la linea tiene varias columnas y la primera no tiene numeros (un titulo como CODIGO), se ignora."""
+    if "\t" in line:
+        cells = [c.strip() for c in line.split("\t") if c.strip()]
+        first, several = cells[0], len(cells) > 1
+    else:
+        words = [w for w in re.split(r"[,;\s]+", line) if w]
+        if not words:
+            return []
+        if len(words) > 1 and all(CODE_LIKE.fullmatch(w) for w in words):
+            return words
+        first, several = words[0], len(words) > 1
+    if several and not re.search(r"\d", first):
+        return []
+    return [first]
+
+
 def parse_codes(text: str) -> list[dict]:
-    """Un codigo por linea (o separados por coma/espacio). Opcional: 'CODIGO | texto' para ponerle un texto debajo."""
+    """Un codigo por linea, o pegar un texto o una tabla: de cada linea se toma el primer codigo.
+    Opcional: 'CODIGO | texto' para ponerle un texto debajo."""
     items, seen = [], set()
     for line in (text or "").replace("\r", "\n").split("\n"):
         line = line.strip().lstrip("-•*·\"' ").strip()
@@ -121,7 +146,7 @@ def parse_codes(text: str) -> list[dict]:
             code, note = line.split("|", 1)
             pairs = [(code, note.strip())]
         else:
-            pairs = [(t, "") for t in re.split(r"[,;\t\s]+", line) if t]
+            pairs = [(t, "") for t in line_codes(line)]
         for code, note in pairs:
             code = code.strip().strip("\"'").rstrip(".,;:")
             key = norm_key(code)
@@ -176,6 +201,7 @@ class BuildRequest(BaseModel):
     title: str = Field("", max_length=80)
     per_page: int = 6
     show_code: bool = True
+    show_link: bool = True
 
 
 @app.get("/healthz")
@@ -249,7 +275,8 @@ def build(req: BuildRequest, x_access_code: str = Header(default="")):
                 try:
                     m = found[i["key"]]
                     jpeg, w, h = load_prepared(idx.source, m.photo)
-                    return Item(m.code, i["note"], jpeg, w, h)
+                    link = idx.source.link(m.photo) if req.show_link else ""
+                    return Item(m.code, i["note"], jpeg, w, h, link)
                 except Exception:  # noqa: BLE001
                     log.exception("Foto %s", i["code"])
                     return None

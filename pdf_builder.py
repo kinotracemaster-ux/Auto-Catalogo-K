@@ -30,6 +30,7 @@ class Item:
     jpeg: bytes
     width: int
     height: int
+    link: str = ""  # enlace para descargar la foto (va debajo, y tocar la foto tambien lo abre)
 
 
 def latin(text: str) -> str:
@@ -105,6 +106,7 @@ def build_pdf(
     compact = cols >= 3
     code_size = 10 if compact else 12
     note_size = 8 if compact else 9
+    link_size = 7.5 if compact else 8.5
     text_w = cell_w - 2 * pad
 
     brand = HexColor(brand_color)
@@ -162,6 +164,8 @@ def build_pdf(
             label_h += code_size * 1.5
         if n_lines:
             label_h += note_size * 1.25 * n_lines + 2
+        if any(it.link for it in page_items):
+            label_h += link_size * 1.6
 
         for pos, it in enumerate(page_items):
             r, col = divmod(pos, cols)
@@ -180,6 +184,8 @@ def build_pdf(
             scale = min(aw / it.width, ah / it.height)
             dw, dh = it.width * scale, it.height * scale
             c.drawImage(ImageReader(BytesIO(it.jpeg)), ax + (aw - dw) / 2, ay + (ah - dh) / 2, dw, dh)
+            if it.link:
+                c.linkURL(it.link, (ax, ay, ax + aw, ay + ah), relative=0)
 
             cx = x + cell_w / 2
             base = ay - 3
@@ -196,6 +202,17 @@ def build_pdf(
                 for line in notes[id(it)]:
                     base -= note_size * 1.2
                     c.drawCentredString(cx, base, line)
+            if it.link:
+                base -= link_size * 1.4
+                label = "Descargar foto"
+                lw = stringWidth(label, "Helvetica", link_size)
+                c.setFillColor(brand)
+                c.setStrokeColor(brand)
+                c.setLineWidth(0.5)
+                c.setFont("Helvetica", link_size)
+                c.drawCentredString(cx, base, label)
+                c.line(cx - lw / 2, base - 1.2, cx + lw / 2, base - 1.2)
+                c.linkURL(it.link, (cx - lw / 2 - 4, base - 3, cx + lw / 2 + 4, base + link_size), relative=0)
 
     c.save()
     return buf.getvalue()

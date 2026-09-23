@@ -6,10 +6,10 @@ Aplicación web rápida y moderna para generar catálogos de productos en PDF (f
 
 ## 🚀 ¿Cómo funciona la aplicación?
 
-1. **Ingreso de Códigos**: El usuario pega una lista de códigos en la interfaz web (uno por línea, o separados por comas/espacios). También permite agregar una descripción o precio con el separador `|` (ejemplo: `892B-D2 | Cronógrafo negro $150.000`).
+1. **Ingreso de Códigos**: El usuario pone el nombre del catálogo y pega los códigos (uno por línea). También puede pegar un texto o una tabla copiada de Excel/Sheets: de cada línea se toma solo el código de la primera columna (una fila de títulos como `CODIGO` se ignora). Varios códigos en una misma línea (`892B-D2 9051-6`) también sirven. Para poner un texto debajo de la foto: `892B-D2 | Cronógrafo negro $150.000`.
 2. **Búsqueda Automática en Google Drive**: La app utiliza una cuenta de servicio de Google Cloud (o una clave de API) para buscar en la carpeta de Drive (y sus subcarpetas) las fotos cuyos nombres coincidan con los códigos ingresados (ejemplo: `892B-D2.jpg`).
 3. **Optimización con Pillow**: Las fotos se redimensionan en segundo plano con algoritmo Lanczos y compresión JPEG optimizada, almacenándose en una caché temporal para que la generación sea instantánea.
-4. **Construcción del PDF con ReportLab**: Se ensambla un PDF limpio en cuadrícula configurable (4, 6, 9 o 12 fotos por hoja), con el color de marca, título del catálogo, fecha, logo y pie de página.
+4. **Construcción del PDF con ReportLab**: Se ensambla un PDF limpio en cuadrícula configurable (4, 6, 9 o 12 fotos por hoja), con el color de marca, título del catálogo, fecha, logo y pie de página. Debajo de cada foto va un enlace **Descargar foto** (tocar la foto también lo abre) que baja la foto original del Drive; se puede quitar en *Opciones*. El enlace sirve a cualquiera si la carpeta está compartida como "Cualquier persona con el enlace".
 5. **Reporte y Descarga**: La app informa de inmediato si hubo códigos sin foto y permite visualizar o descargar el archivo PDF generado.
 
 > **Carpetas por código**: las fotos están en una carpeta con lo que va antes del guion, directamente o en subcarpetas: `839B-6` → `…/839B/PRINCIPAL/839B-6.png`. Al arrancar, la app lee solo los primeros niveles del Drive (hasta las carpetas de cada modelo) y cada código lo busca en el momento dentro de su carpeta, así sirve aunque el Drive tenga decenas de miles de carpetas. Los `.psd`, `.ai` y videos se ignoran.
