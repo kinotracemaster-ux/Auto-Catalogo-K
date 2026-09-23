@@ -71,6 +71,14 @@ details[open] summary::after{transform:rotate(-135deg)}
 .chip{font:600 13px ui-monospace,SFMono-Regular,Menlo,monospace;background:#fff;border:1px solid currentColor;border-radius:8px;padding:3px 8px;overflow-wrap:anywhere}
 .note .btn{min-height:40px;font-size:15px;margin-top:2px}
 .foot{margin:10px 2px 0;font-size:13px;color:var(--muted)}
+.btn.wide{width:100%;margin-top:14px}
+.linklist{margin-top:16px;border-top:1px solid var(--line);padding-top:14px}
+.linklist h3{margin:0 0 10px;font:700 20px/1.1 "Saira Condensed",Barlow,sans-serif;text-transform:uppercase}
+.links{list-style:none;margin:12px 0 0;padding:0;border-top:1px solid var(--line)}
+.links li{display:grid;grid-template-columns:1fr auto auto;align-items:baseline;gap:4px 16px;padding:10px 0;border-bottom:1px solid var(--line)}
+.links b{font:600 14px ui-monospace,SFMono-Regular,Menlo,monospace;min-width:0;overflow-wrap:anywhere}
+.links a{color:var(--ink);font-weight:600;padding:4px 0}
+.links a.dim{color:var(--muted);font-weight:500}
 [hidden]{display:none!important}
 </style>
 </head>
@@ -245,6 +253,18 @@ details[open] summary::after{transform:rotate(-135deg)}
     return box;
   }
 
+  function linkList(photos) {
+    const n = photos.length;
+    const lines = photos.map(p => `${p.code}: ${p.view}`);
+    return el('div', { class: 'linklist' },
+      el('h3', { text: `Enlaces de las fotos (${n})` }),
+      el('div', { class: 'btns' }, copyButton('Copiar todos los enlaces', lines.join('\n'), 'btn solid')),
+      el('ul', { class: 'links' }, photos.map(p => el('li', {},
+        el('b', { text: p.code }),
+        el('a', { href: p.view, target: '_blank', rel: 'noopener', text: 'Abrir en Drive' }),
+        el('a', { class: 'dim', href: p.download, target: '_blank', rel: 'noopener', text: 'Descargar' })))));
+  }
+
   function render(data, title) {
     const box = $('#result');
     box.replaceChildren();
@@ -266,6 +286,15 @@ details[open] summary::after{transform:rotate(-135deg)}
       res.append(codeList('Sin foto', data.missing, 'warn', 'Revisa que el código esté escrito igual al nombre de la foto en el Drive. Si acabas de subir la foto, vuelve a generar en un minuto.'));
     if (data.errors && data.errors.length)
       res.append(codeList('Foto que no se pudo leer', data.errors, 'bad', 'El archivo puede estar dañado o no ser una imagen compatible.'));
+    if (data.ok && data.photos && data.photos.length) {
+      const more = el('button', { type: 'button', class: 'btn wide', text: 'Generar enlaces de todas las fotos' });
+      more.addEventListener('click', () => {
+        const list = linkList(data.photos);
+        more.replaceWith(list);
+        list.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion:reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+      });
+      res.append(more);
+    }
     box.append(res);
     res.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion:reduce)').matches ? 'auto' : 'smooth', block: 'start' });
   }
