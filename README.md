@@ -12,6 +12,8 @@ Aplicación web rápida y moderna para generar catálogos de productos en PDF (f
 4. **Construcción del PDF con ReportLab**: Se ensambla un PDF limpio en cuadrícula configurable (4, 6, 9 o 12 fotos por hoja), con el color de marca, título del catálogo, fecha, logo y pie de página.
 5. **Reporte y Descarga**: La app informa de inmediato si hubo códigos sin foto y permite visualizar o descargar el archivo PDF generado.
 
+> **Carpetas por código**: las fotos suelen estar en una carpeta con lo que va antes del guion (`2624-1.jpg` dentro de la carpeta `2624`). Si una foto recién subida todavía no aparece, la app la busca en el momento dentro de esa carpeta.
+
 ---
 
 ## 🛠️ Tecnologías

@@ -7,6 +7,7 @@
 Regla de busqueda: el nombre del archivo (sin extension) es el codigo del producto.
 Tambien se aceptan fotos extra con sufijo _1, _2 ... (ej. 892B-D2_1.jpg). Si no existe
 la foto principal, se usa la primera de esas.
+Las fotos suelen estar en una carpeta con lo que va antes del guion (2624-1 -> carpeta 2624).
 """
 from __future__ import annotations
 
@@ -111,6 +112,7 @@ class DriveSource:
         self.session = session
         self.email = info.get("client_email", "")
         self.folder_count = 0
+        self._folders_by_name: dict[str, list[str]] = {}  # nombre de carpeta -> ids (2624 -> [...])
 
     # -- http con reintentos
     def _get(self, url: str, params: dict | None = None, timeout: int = 45):
@@ -200,6 +202,7 @@ class DriveSource:
         con cientos de subcarpetas son unos pocos segundos en vez de minutos."""
         photos: list[Photo] = []
         seen: set[str] = set()
+        by_name: dict[str, list[str]] = {}
         level = [self.folder_id]
         with ThreadPoolExecutor(self.WORKERS) as pool:
             while level and len(seen) < self.MAX_FOLDERS:
@@ -213,12 +216,30 @@ class DriveSource:
                         mime = f.get("mimeType", "")
                         if mime == self.FOLDER_MIME:
                             level.append(f["id"])
+                            by_name.setdefault(norm_key(f["name"]), []).append(f["id"])
                         elif mime.startswith("image/"):
-                            photos.append(Photo(f["id"], f["name"], f.get("md5Checksum") or f.get("modifiedTime", "")))
+                            photos.append(self._photo(f))
         if level:
             log.warning("Hay mas de %d carpetas: las demas no se revisan", self.MAX_FOLDERS)
         self.folder_count = len(seen)
+        self._folders_by_name = by_name
         return photos
+
+    @staticmethod
+    def _photo(f: dict) -> Photo:
+        return Photo(f["id"], f["name"], f.get("md5Checksum") or f.get("modifiedTime", ""))
+
+    def folders_named(self, names: set[str]) -> list[str]:
+        """Ids de las carpetas con esos nombres (ya normalizados), segun el ultimo listado."""
+        return [fid for name in names for fid in self._folders_by_name.get(name, [])]
+
+    def photos_in(self, folders: list[str]) -> list[Photo]:
+        """Fotos que estan directamente dentro de esas carpetas, preguntando al Drive ya mismo."""
+        n = self.PARENTS_PER_QUERY
+        chunks = [folders[i : i + n] for i in range(0, len(folders), n)]
+        with ThreadPoolExecutor(self.WORKERS) as pool:
+            batches = list(pool.map(self._children, chunks))
+        return [self._photo(f) for files in batches for f in files if f.get("mimeType", "").startswith("image/")]
 
     def fetch(self, photo: Photo) -> bytes:
         r = self._get(f"{self.API}/{photo.ref}", {"alt": "media", "supportsAllDrives": "true"}, timeout=90)
@@ -295,6 +316,12 @@ class PhotoIndex:
     def _build(self) -> tuple[dict[str, list[tuple[int, Photo, str]]], int]:
         started = time.time()
         photos = self.source.list_photos()
+        mapping = self._mapping(photos)
+        log.info("Indice de fotos listo: %d fotos en %.1f s", len(photos), time.time() - started)
+        return mapping, len(photos)
+
+    @staticmethod
+    def _mapping(photos: list[Photo]) -> dict[str, list[tuple[int, Photo, str]]]:
         mapping: dict[str, list[tuple[int, Photo, str]]] = {}
         for p in photos:
             stem = p.name.rsplit(".", 1)[0] if "." in p.name else p.name
@@ -305,8 +332,7 @@ class PhotoIndex:
                 mapping.setdefault(norm_key(m.group(1)), []).append((1 + int(m.group(2)), p, m.group(1)))
         for lst in mapping.values():
             lst.sort(key=lambda t: (t[0], t[1].name))
-        log.info("Indice de fotos listo: %d fotos en %.1f s", len(photos), time.time() - started)
-        return mapping, len(photos)
+        return mapping
 
     def _refresh(self) -> None:
         """Relista en segundo plano; si falla, sigue con el mapa anterior."""
@@ -336,12 +362,30 @@ class PhotoIndex:
     def lookup(self, keys: list[str]) -> tuple[dict[str, Match], list[str]]:
         """Devuelve ({clave: Match(foto, codigo del Drive)}, [claves sin foto])."""
 
-        data = self.get()
-        found = {k: Match(data[k][0][1], data[k][0][2]) for k in keys if k in data}
+        found = self._find(self.get(), keys)
         missing = [k for k in keys if k not in found]
-        if missing:  # quiza acaban de subir la foto: relista en segundo plano para el proximo intento
+        if missing:  # quiza acaban de subir la foto: la busca ya mismo en su carpeta (2624-1 -> 2624)
+            found.update(self._from_folders(missing))
+            missing = [k for k in keys if k not in found]
+        if missing:  # carpeta nueva o nombre distinto: relista todo en segundo plano para el proximo intento
             self.get(force=True)
         return found, missing
+
+    @staticmethod
+    def _find(data: dict[str, list[tuple[int, Photo, str]]], keys: list[str]) -> dict[str, Match]:
+        return {k: Match(data[k][0][1], data[k][0][2]) for k in keys if k in data}
+
+    def _from_folders(self, keys: list[str]) -> dict[str, Match]:
+        folders_named = getattr(self.source, "folders_named", None)
+        prefixes = {k.split("-", 1)[0] for k in keys if "-" in k}
+        folders = folders_named(prefixes) if folders_named and prefixes else []
+        if not folders:
+            return {}
+        try:
+            return self._find(self._mapping(self.source.photos_in(folders)), keys)
+        except Exception:  # noqa: BLE001
+            log.warning("No pude revisar las carpetas %s", sorted(prefixes), exc_info=True)
+            return {}
 
     @property
     def photo_count(self) -> int:
