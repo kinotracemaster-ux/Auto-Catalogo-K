@@ -275,8 +275,8 @@ def build(req: BuildRequest, x_access_code: str = Header(default="")):
                 try:
                     m = found[i["key"]]
                     jpeg, w, h = load_prepared(idx.source, m.photo)
-                    link = idx.source.link(m.photo) if req.show_link else ""
-                    return Item(m.code, i["note"], jpeg, w, h, link)
+                    src = idx.source
+                    return Item(m.code, i["note"], jpeg, w, h, src.view_link(m.photo), src.download_link(m.photo))
                 except Exception:  # noqa: BLE001
                     log.exception("Foto %s", i["code"])
                     return None
@@ -301,6 +301,7 @@ def build(req: BuildRequest, x_access_code: str = Header(default="")):
             title=title,
             per_page=per_page,
             show_code=req.show_code,
+            show_link=req.show_link,
             brand_color=BRAND_COLOR,
             brand_name=BRAND_NAME,
             footer=FOOTER_TEXT,
@@ -320,6 +321,8 @@ def build(req: BuildRequest, x_access_code: str = Header(default="")):
             "pdf_url": f"/pdf/{pid}/{filename}",
             "filename": filename,
             "expires_hours": PDF_TTL_HOURS,
+            # para el boton "Generar enlaces de todas las fotos"
+            "photos": [{"code": it.code, "view": it.view, "download": it.download} for it in pdf_items if it.view],
             **base,
         }
     finally:
