@@ -19,6 +19,7 @@ import re
 import threading
 import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
@@ -87,7 +88,10 @@ class DriveSource:
     kind = "drive"
     API = "https://www.googleapis.com/drive/v3/files"
     SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
-    MAX_FOLDERS = 500
+    FOLDER_MIME = "application/vnd.google-apps.folder"
+    MAX_FOLDERS = 5000
+    PARENTS_PER_QUERY = 30  # carpetas por consulta: ('a' in parents or 'b' in parents ...)
+    WORKERS = 8  # consultas a Drive al mismo tiempo
 
     def __init__(self, folder_id: str, credentials_json: str | None = None, session=None, api_key: str | None = None):
         self.folder_id = extract_folder_id(folder_id)
@@ -106,6 +110,7 @@ class DriveSource:
             session = AuthorizedSession(creds)
         self.session = session
         self.email = info.get("client_email", "")
+        self.folder_count = 0
 
     # -- http con reintentos
     def _get(self, url: str, params: dict | None = None, timeout: int = 45):
@@ -121,19 +126,28 @@ class DriveSource:
                     raise
                 time.sleep(1.5 * (attempt + 1))
                 continue
-            if r.status_code in (429, 500, 502, 503, 504) and attempt < 2:
+            limited = r.status_code == 403 and "ratelimitexceeded" in (r.text or "").lower()
+            if (limited or r.status_code in (429, 500, 502, 503, 504)) and attempt < 2:
                 time.sleep(1.5 * (attempt + 1))
                 continue
             return r
         return r  # pragma: no cover
 
-    def _error(self, r, folder: str) -> SourceError:
+    @staticmethod
+    def _detail(r) -> str:
         try:
-            detail = r.json().get("error", {}).get("message", "")
+            return r.json().get("error", {}).get("message", "")
         except Exception:  # noqa: BLE001
-            detail = (r.text or "")[:200]
-        key_problem = ("api key", "blocked", "has not been used", "is disabled")
-        if self.api_key and any(k in detail.lower() for k in key_problem):
+            return (r.text or "")[:200]
+
+    def _key_problem(self, detail: str) -> bool:
+        return bool(self.api_key) and any(
+            k in detail.lower() for k in ("api key", "blocked", "has not been used", "is disabled")
+        )
+
+    def _error(self, r, folder: str) -> SourceError:
+        detail = self._detail(r)
+        if self._key_problem(detail):
             return SourceError(
                 "Google rechazo GOOGLE_API_KEY. Revisa que este bien copiada, que tenga habilitada "
                 f"Google Drive API y sin restriccion de sitios web ni de IP. ({detail[:150]})"
@@ -150,39 +164,60 @@ class DriveSource:
             )
         return SourceError(f"Drive respondio {r.status_code}: {detail[:200]}")
 
+    def _children(self, folders: list[str]) -> list[dict]:
+        """Todo lo que hay dentro de varias carpetas, con una sola consulta (todas las paginas).
+        Si Drive rechaza la consulta, la parte en dos; una subcarpeta que no se puede leer se salta."""
+        parents = " or ".join(f"'{f}' in parents" for f in folders)
+        params = {
+            "q": f"({parents}) and trashed = false",
+            "fields": "nextPageToken,files(id,name,mimeType,md5Checksum,modifiedTime)",
+            "pageSize": 1000,
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+        }
+        files: list[dict] = []
+        while True:
+            r = self._get(self.API, params)
+            if r.status_code != 200:
+                first_page = "pageToken" not in params
+                if first_page and len(folders) > 1 and r.status_code >= 400 and not self._key_problem(self._detail(r)):
+                    mid = len(folders) // 2
+                    return self._children(folders[:mid]) + self._children(folders[mid:])
+                limited = "ratelimitexceeded" in (r.text or "").lower()
+                if r.status_code in (403, 404) and folders[0] != self.folder_id and not limited:
+                    log.warning("Salto la subcarpeta %s: Drive no la deja leer (%s)", folders[0], r.status_code)
+                    return []
+                raise self._error(r, folders[0])
+            data = r.json()
+            files.extend(data.get("files", []))
+            if not data.get("nextPageToken"):
+                return files
+            params["pageToken"] = data["nextPageToken"]
+
     def list_photos(self) -> list[Photo]:
-        """Recorre la carpeta y sus subcarpetas (las mas cercanas a la raiz primero)."""
+        """Recorre la carpeta y sus subcarpetas por niveles (las mas cercanas a la raiz primero).
+        Cada consulta pide muchas carpetas juntas y se hacen varias consultas a la vez:
+        con cientos de subcarpetas son unos pocos segundos en vez de minutos."""
         photos: list[Photo] = []
-        queue, seen = [self.folder_id], set()
-        while queue and len(seen) < self.MAX_FOLDERS:
-            folder = queue.pop(0)
-            if folder in seen:
-                continue
-            seen.add(folder)
-            token = None
-            while True:
-                params = {
-                    "q": f"'{folder}' in parents and trashed = false",
-                    "fields": "nextPageToken,files(id,name,mimeType,md5Checksum,modifiedTime)",
-                    "pageSize": 1000,
-                    "supportsAllDrives": "true",
-                    "includeItemsFromAllDrives": "true",
-                }
-                if token:
-                    params["pageToken"] = token
-                r = self._get(self.API, params)
-                if r.status_code != 200:
-                    raise self._error(r, folder)
-                data = r.json()
-                for f in data.get("files", []):
-                    mime = f.get("mimeType", "")
-                    if mime == "application/vnd.google-apps.folder":
-                        queue.append(f["id"])
-                    elif mime.startswith("image/"):
-                        photos.append(Photo(f["id"], f["name"], f.get("md5Checksum") or f.get("modifiedTime", "")))
-                token = data.get("nextPageToken")
-                if not token:
-                    break
+        seen: set[str] = set()
+        level = [self.folder_id]
+        with ThreadPoolExecutor(self.WORKERS) as pool:
+            while level and len(seen) < self.MAX_FOLDERS:
+                level = [f for f in dict.fromkeys(level) if f not in seen][: self.MAX_FOLDERS - len(seen)]
+                seen.update(level)
+                n = self.PARENTS_PER_QUERY
+                chunks = [level[i : i + n] for i in range(0, len(level), n)]
+                level = []
+                for files in pool.map(self._children, chunks):
+                    for f in files:
+                        mime = f.get("mimeType", "")
+                        if mime == self.FOLDER_MIME:
+                            level.append(f["id"])
+                        elif mime.startswith("image/"):
+                            photos.append(Photo(f["id"], f["name"], f.get("md5Checksum") or f.get("modifiedTime", "")))
+        if level:
+            log.warning("Hay mas de %d carpetas: las demas no se revisan", self.MAX_FOLDERS)
+        self.folder_count = len(seen)
         return photos
 
     def fetch(self, photo: Photo) -> bytes:
@@ -192,9 +227,10 @@ class DriveSource:
         return r.content
 
     def describe(self) -> dict:
+        out = {"kind": self.kind, "folder": self.folder_id, "folders_read": self.folder_count}
         if self.api_key:
-            return {"kind": self.kind, "folder": self.folder_id, "auth": "api_key"}
-        return {"kind": self.kind, "folder": self.folder_id, "service_account": self.email}
+            return {**out, "auth": "api_key"}
+        return {**out, "service_account": self.email}
 
 
 # --------------------------------------------------------------------------- Local
@@ -238,10 +274,11 @@ def make_source_from_env():
 
 # --------------------------------------------------------------------------- Indice
 class PhotoIndex:
-    """Mapa codigo -> fotos, en memoria, para no listar el Drive en cada pedido.
+    """Mapa codigo -> fotos, en memoria: buscar un codigo es instantaneo, sin preguntarle al Drive.
 
-    Se refresca solo cada `ttl` segundos y, si piden un codigo que no aparece,
-    se vuelve a listar (maximo una vez cada `min_refresh` segundos) por si acaban de subir la foto.
+    Solo la primera carga hace esperar. Despues, cuando el mapa tiene mas de `ttl` segundos
+    (o piden un codigo que no aparece, por si acaban de subir la foto), se vuelve a listar
+    en segundo plano sin frenar a nadie: maximo una vez cada `min_refresh` segundos.
     """
 
     def __init__(self, source, ttl: int = 300, min_refresh: int = 20):
@@ -253,8 +290,10 @@ class PhotoIndex:
         self._photo_count = 0
         self._loaded_at = 0.0
         self._last_attempt = 0.0
+        self._refreshing = False
 
-    def _build(self) -> dict[str, list[tuple[int, Photo, str]]]:
+    def _build(self) -> tuple[dict[str, list[tuple[int, Photo, str]]], int]:
+        started = time.time()
         photos = self.source.list_photos()
         mapping: dict[str, list[tuple[int, Photo, str]]] = {}
         for p in photos:
@@ -266,39 +305,42 @@ class PhotoIndex:
                 mapping.setdefault(norm_key(m.group(1)), []).append((1 + int(m.group(2)), p, m.group(1)))
         for lst in mapping.values():
             lst.sort(key=lambda t: (t[0], t[1].name))
-        self._photo_count = len(photos)
-        return mapping
+        log.info("Indice de fotos listo: %d fotos en %.1f s", len(photos), time.time() - started)
+        return mapping, len(photos)
+
+    def _refresh(self) -> None:
+        """Relista en segundo plano; si falla, sigue con el mapa anterior."""
+        try:
+            mapping, count = self._build()
+            with self._lock:
+                self._map, self._photo_count, self._loaded_at = mapping, count, time.time()
+        except Exception:  # noqa: BLE001
+            log.exception("No pude refrescar el indice; sigo con el anterior")
+        finally:
+            self._refreshing = False
 
     def get(self, force: bool = False) -> dict[str, list[tuple[int, Photo, str]]]:
         with self._lock:
             now = time.time()
-            due = (not self._loaded_at) or (now - self._loaded_at > self.ttl)
-            if force:
-                due = now - self._last_attempt > self.min_refresh
-            elif due and self._map and now - self._last_attempt < 30:
-                due = False  # fallo hace poco: no martillar el Drive
-            if due:
+            due = force or now - self._loaded_at > self.ttl
+            if not self._loaded_at:  # primera carga: aqui si hay que esperar
                 self._last_attempt = now
-                try:
-                    self._map = self._build()
-                    self._loaded_at = time.time()
-                except Exception:
-                    if not self._map:
-                        raise
-                    log.exception("No pude refrescar el indice; sigo con el anterior")
+                self._map, self._photo_count = self._build()
+                self._loaded_at = time.time()
+            elif due and not self._refreshing and now - self._last_attempt > self.min_refresh:
+                self._refreshing = True
+                self._last_attempt = now
+                threading.Thread(target=self._refresh, name="refrescar-indice", daemon=True).start()
             return self._map
 
     def lookup(self, keys: list[str]) -> tuple[dict[str, Match], list[str]]:
         """Devuelve ({clave: Match(foto, codigo del Drive)}, [claves sin foto])."""
 
-        def find(data):
-            return {k: Match(data[k][0][1], data[k][0][2]) for k in keys if k in data}
-
-        found = find(self.get())
+        data = self.get()
+        found = {k: Match(data[k][0][1], data[k][0][2]) for k in keys if k in data}
         missing = [k for k in keys if k not in found]
-        if missing:  # quiza acaban de subir la foto: relista (con limite de frecuencia)
-            found = find(self.get(force=True))
-            missing = [k for k in keys if k not in found]
+        if missing:  # quiza acaban de subir la foto: relista en segundo plano para el proximo intento
+            self.get(force=True)
         return found, missing
 
     @property

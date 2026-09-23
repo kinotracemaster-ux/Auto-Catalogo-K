@@ -19,6 +19,7 @@ import threading
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
 
@@ -72,7 +73,23 @@ PDF_DIR = TMP / "catalogo_pdfs"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 PDF_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title=APP_NAME, docs_url=None, redoc_url=None, openapi_url=None)
+
+
+def warm_index() -> None:
+    """Lista el Drive apenas arranca la app, asi la primera busqueda no espera."""
+    try:
+        get_index().get()
+    except Exception:  # noqa: BLE001
+        log.warning("No pude listar el Drive al arrancar", exc_info=True)
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    threading.Thread(target=warm_index, name="cargar-indice", daemon=True).start()
+    yield
+
+
+app = FastAPI(title=APP_NAME, docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
 
 # --------------------------------------------------------------------------- helpers
