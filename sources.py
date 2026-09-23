@@ -2,12 +2,15 @@
 
 - DriveSource: lee una carpeta de Google Drive (y sus subcarpetas) con una cuenta de servicio,
   o con una clave de API si la carpeta esta compartida como "Cualquier persona con el enlace".
+  Pensada para Drives enormes (decenas de miles de carpetas): no lista todo, solo los primeros
+  niveles, y cada codigo se busca dentro de su carpeta (839B-6 -> 839B/PRINCIPAL/839B-6.png).
 - LocalSource: lee una carpeta del disco (pruebas, o Drive de escritorio).
 
 Regla de busqueda: el nombre del archivo (sin extension) es el codigo del producto.
 Tambien se aceptan fotos extra con sufijo _1, _2 ... (ej. 892B-D2_1.jpg). Si no existe
 la foto principal, se usa la primera de esas.
-Las fotos suelen estar en una carpeta con lo que va antes del guion (2624-1 -> carpeta 2624).
+Las fotos suelen estar en una carpeta con lo que va antes del guion (2624-1 -> carpeta 2624),
+directamente o en subcarpetas (PRINCIPAL, SECUNDARIAS...).
 """
 from __future__ import annotations
 
@@ -90,9 +93,14 @@ class DriveSource:
     API = "https://www.googleapis.com/drive/v3/files"
     SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
     FOLDER_MIME = "application/vnd.google-apps.folder"
-    MAX_FOLDERS = 5000
-    PARENTS_PER_QUERY = 30  # carpetas por consulta: ('a' in parents or 'b' in parents ...)
-    WORKERS = 8  # consultas a Drive al mismo tiempo
+    # formatos que se pueden poner en el PDF (no .psd, .ai, heic ni videos)
+    IMG_MIMES = {"image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif", "image/bmp", "image/tiff"}
+    INDEX_DEPTH = 4  # niveles que se listan al arrancar: PRODUCTOS/marca/HOMBRE/839B
+    CODE_DEPTH = 3  # niveles que se revisan dentro de la carpeta de un codigo: 839B/PRINCIPAL/...
+    MAX_FOLDERS = 20000
+    # Drive responde rapido una carpeta por consulta (~0.2 s) y lento si se piden varias juntas:
+    # por eso se pregunta carpeta por carpeta, muchas a la vez.
+    WORKERS = 16
 
     def __init__(self, folder_id: str, credentials_json: str | None = None, session=None, api_key: str | None = None):
         self.folder_id = extract_folder_id(folder_id)
@@ -109,6 +117,10 @@ class DriveSource:
             info = load_service_account(credentials_json)
             creds = service_account.Credentials.from_service_account_info(info, scopes=self.SCOPES)
             session = AuthorizedSession(creds)
+        if hasattr(session, "mount"):  # que las consultas en paralelo reusen conexiones
+            from requests.adapters import HTTPAdapter
+
+            session.mount("https://", HTTPAdapter(pool_maxsize=2 * self.WORKERS))
         self.session = session
         self.email = info.get("client_email", "")
         self.folder_count = 0
@@ -166,12 +178,10 @@ class DriveSource:
             )
         return SourceError(f"Drive respondio {r.status_code}: {detail[:200]}")
 
-    def _children(self, folders: list[str]) -> list[dict]:
-        """Todo lo que hay dentro de varias carpetas, con una sola consulta (todas las paginas).
-        Si Drive rechaza la consulta, la parte en dos; una subcarpeta que no se puede leer se salta."""
-        parents = " or ".join(f"'{f}' in parents" for f in folders)
+    def _children(self, folder: str) -> list[dict]:
+        """Todo lo que hay dentro de una carpeta (todas las paginas). Una subcarpeta que no se puede leer se salta."""
         params = {
-            "q": f"({parents}) and trashed = false",
+            "q": f"'{folder}' in parents and trashed = false",
             "fields": "nextPageToken,files(id,name,mimeType,md5Checksum,modifiedTime)",
             "pageSize": 1000,
             "supportsAllDrives": "true",
@@ -181,65 +191,73 @@ class DriveSource:
         while True:
             r = self._get(self.API, params)
             if r.status_code != 200:
-                first_page = "pageToken" not in params
-                if first_page and len(folders) > 1 and r.status_code >= 400 and not self._key_problem(self._detail(r)):
-                    mid = len(folders) // 2
-                    return self._children(folders[:mid]) + self._children(folders[mid:])
                 limited = "ratelimitexceeded" in (r.text or "").lower()
-                if r.status_code in (403, 404) and folders[0] != self.folder_id and not limited:
-                    log.warning("Salto la subcarpeta %s: Drive no la deja leer (%s)", folders[0], r.status_code)
-                    return []
-                raise self._error(r, folders[0])
+                if r.status_code in (403, 404) and folder != self.folder_id and not limited \
+                        and not self._key_problem(self._detail(r)):
+                    log.warning("Salto la subcarpeta %s: Drive no la deja leer (%s)", folder, r.status_code)
+                    return files
+                raise self._error(r, folder)
             data = r.json()
             files.extend(data.get("files", []))
             if not data.get("nextPageToken"):
                 return files
             params["pageToken"] = data["nextPageToken"]
 
-    def list_photos(self) -> list[Photo]:
-        """Recorre la carpeta y sus subcarpetas por niveles (las mas cercanas a la raiz primero).
-        Cada consulta pide muchas carpetas juntas y se hacen varias consultas a la vez:
-        con cientos de subcarpetas son unos pocos segundos en vez de minutos."""
-        photos: list[Photo] = []
-        seen: set[str] = set()
-        by_name: dict[str, list[str]] = {}
-        level = [self.folder_id]
+    def _walk(self, roots: list[str], depth: int) -> tuple[list[tuple[str, Photo]], list[dict], int]:
+        """Recorre esas carpetas y sus subcarpetas hasta `depth` niveles (las mas cercanas primero),
+        una consulta por carpeta y varias a la vez.
+        Devuelve ([(carpeta de arranque, foto)], [subcarpetas vistas], cuantas carpetas se leyeron)."""
+        photos: list[tuple[str, Photo]] = []
+        folders: list[dict] = []
+        origin = {r: r for r in roots}
+        level, seen = list(dict.fromkeys(roots)), set()
         with ThreadPoolExecutor(self.WORKERS) as pool:
-            while level and len(seen) < self.MAX_FOLDERS:
-                level = [f for f in dict.fromkeys(level) if f not in seen][: self.MAX_FOLDERS - len(seen)]
+            for _ in range(depth):
+                level = [f for f in level if f not in seen][: max(0, self.MAX_FOLDERS - len(seen))]
+                if not level:
+                    break
                 seen.update(level)
-                n = self.PARENTS_PER_QUERY
-                chunks = [level[i : i + n] for i in range(0, len(level), n)]
-                level = []
-                for files in pool.map(self._children, chunks):
+                nxt = []
+                for parent, files in zip(level, pool.map(self._children, level)):
                     for f in files:
                         mime = f.get("mimeType", "")
                         if mime == self.FOLDER_MIME:
-                            level.append(f["id"])
-                            by_name.setdefault(norm_key(f["name"]), []).append(f["id"])
-                        elif mime.startswith("image/"):
-                            photos.append(self._photo(f))
-        if level:
+                            origin.setdefault(f["id"], origin[parent])
+                            nxt.append(f["id"])
+                            folders.append(f)
+                        elif mime in self.IMG_MIMES:
+                            photos.append((origin[parent], self._photo(f)))
+                level = nxt
+        if len(seen) >= self.MAX_FOLDERS:
             log.warning("Hay mas de %d carpetas: las demas no se revisan", self.MAX_FOLDERS)
-        self.folder_count = len(seen)
+        return photos, folders, len(seen)
+
+    def list_photos(self) -> list[Photo]:
+        """Lista los primeros niveles: los nombres de las carpetas (para ubicar la de cada codigo)
+        y las fotos que haya en ellos. Las fotos mas adentro se buscan con photos_under."""
+        photos, folders, count = self._walk([self.folder_id], self.INDEX_DEPTH)
+        by_name: dict[str, list[str]] = {}
+        for f in folders:
+            by_name.setdefault(norm_key(f["name"]), []).append(f["id"])
+        self.folder_count = count
         self._folders_by_name = by_name
-        return photos
+        return [p for _, p in photos]
 
     @staticmethod
     def _photo(f: dict) -> Photo:
         return Photo(f["id"], f["name"], f.get("md5Checksum") or f.get("modifiedTime", ""))
 
-    def folders_named(self, names: set[str]) -> list[str]:
-        """Ids de las carpetas con esos nombres (ya normalizados), segun el ultimo listado."""
-        return [fid for name in names for fid in self._folders_by_name.get(name, [])]
+    def folders_named(self, name: str) -> list[str]:
+        """Ids de las carpetas con ese nombre (ya normalizado), segun el ultimo listado."""
+        return self._folders_by_name.get(name, [])
 
-    def photos_in(self, folders: list[str]) -> list[Photo]:
-        """Fotos que estan directamente dentro de esas carpetas, preguntando al Drive ya mismo."""
-        n = self.PARENTS_PER_QUERY
-        chunks = [folders[i : i + n] for i in range(0, len(folders), n)]
-        with ThreadPoolExecutor(self.WORKERS) as pool:
-            batches = list(pool.map(self._children, chunks))
-        return [self._photo(f) for files in batches for f in files if f.get("mimeType", "").startswith("image/")]
+    def photos_under(self, folders: list[str]) -> dict[str, list[Photo]]:
+        """Fotos dentro de esas carpetas y sus subcarpetas (PRINCIPAL, SECUNDARIAS...), preguntando ya mismo."""
+        photos, _, _ = self._walk(folders, self.CODE_DEPTH)
+        out: dict[str, list[Photo]] = {f: [] for f in folders}
+        for root, photo in photos:
+            out[root].append(photo)
+        return out
 
     def fetch(self, photo: Photo) -> bytes:
         r = self._get(f"{self.API}/{photo.ref}", {"alt": "media", "supportsAllDrives": "true"}, timeout=90)
@@ -295,23 +313,27 @@ def make_source_from_env():
 
 # --------------------------------------------------------------------------- Indice
 class PhotoIndex:
-    """Mapa codigo -> fotos, en memoria: buscar un codigo es instantaneo, sin preguntarle al Drive.
+    """Busca las fotos de los codigos.
 
-    Solo la primera carga hace esperar. Despues, cuando el mapa tiene mas de `ttl` segundos
-    (o piden un codigo que no aparece, por si acaban de subir la foto), se vuelve a listar
-    en segundo plano sin frenar a nadie: maximo una vez cada `min_refresh` segundos.
+    1. Mapa en memoria de las carpetas y fotos de los primeros niveles (`source.list_photos`).
+       Solo la primera carga hace esperar; despues se refresca en segundo plano cada `ttl` segundos
+       (o si piden un codigo cuya carpeta no aparece), maximo una vez cada `min_refresh` segundos.
+    2. Si un codigo no esta en el mapa, entra a la carpeta del codigo (839B-6 -> 839B) y a sus
+       subcarpetas y busca ahi el nombre exacto. Lo que encuentra se recuerda `folder_ttl` segundos.
     """
 
-    def __init__(self, source, ttl: int = 300, min_refresh: int = 20):
+    def __init__(self, source, ttl: int = 1800, min_refresh: int = 120, folder_ttl: int = 120):
         self.source = source
         self.ttl = ttl
         self.min_refresh = min_refresh
+        self.folder_ttl = folder_ttl
         self._lock = threading.Lock()
         self._map: dict[str, list[tuple[int, Photo, str]]] = {}
         self._photo_count = 0
         self._loaded_at = 0.0
         self._last_attempt = 0.0
         self._refreshing = False
+        self._folder_cache: dict[str, tuple[float, list[Photo]]] = {}
 
     def _build(self) -> tuple[dict[str, list[tuple[int, Photo, str]]], int]:
         started = time.time()
@@ -375,17 +397,36 @@ class PhotoIndex:
     def _find(data: dict[str, list[tuple[int, Photo, str]]], keys: list[str]) -> dict[str, Match]:
         return {k: Match(data[k][0][1], data[k][0][2]) for k in keys if k in data}
 
+    def _code_folders(self, key: str) -> list[str]:
+        """Carpetas del codigo: la de nombre mas largo que calce (S-696-1 -> S-696 antes que S; 839B-6 -> 839B)."""
+        parts = key.split("-")
+        for n in range(len(parts), 0, -1):
+            ids = self.source.folders_named("-".join(parts[:n]))
+            if ids:
+                return ids
+        return []
+
     def _from_folders(self, keys: list[str]) -> dict[str, Match]:
-        folders_named = getattr(self.source, "folders_named", None)
-        prefixes = {k.split("-", 1)[0] for k in keys if "-" in k}
-        folders = folders_named(prefixes) if folders_named and prefixes else []
+        if not hasattr(self.source, "photos_under"):
+            return {}
+        folders = list(dict.fromkeys(f for k in keys for f in self._code_folders(k)))
         if not folders:
             return {}
-        try:
-            return self._find(self._mapping(self.source.photos_in(folders)), keys)
-        except Exception:  # noqa: BLE001
-            log.warning("No pude revisar las carpetas %s", sorted(prefixes), exc_info=True)
-            return {}
+        now = time.time()
+        with self._lock:
+            cached = {f: c[1] for f in folders if (c := self._folder_cache.get(f)) and now - c[0] < self.folder_ttl}
+        todo = [f for f in folders if f not in cached]
+        if todo:
+            try:
+                fresh = self.source.photos_under(todo)
+            except Exception:  # noqa: BLE001
+                log.warning("No pude revisar las carpetas de %s", keys[:10], exc_info=True)
+                fresh = {}
+            with self._lock:
+                for f, photos in fresh.items():
+                    self._folder_cache[f] = (now, photos)
+            cached.update(fresh)
+        return self._find(self._mapping([p for f in folders for p in cached.get(f, [])]), keys)
 
     @property
     def photo_count(self) -> int:

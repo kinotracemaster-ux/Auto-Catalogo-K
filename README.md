@@ -12,7 +12,7 @@ Aplicación web rápida y moderna para generar catálogos de productos en PDF (f
 4. **Construcción del PDF con ReportLab**: Se ensambla un PDF limpio en cuadrícula configurable (4, 6, 9 o 12 fotos por hoja), con el color de marca, título del catálogo, fecha, logo y pie de página.
 5. **Reporte y Descarga**: La app informa de inmediato si hubo códigos sin foto y permite visualizar o descargar el archivo PDF generado.
 
-> **Carpetas por código**: las fotos suelen estar en una carpeta con lo que va antes del guion (`2624-1.jpg` dentro de la carpeta `2624`). Si una foto recién subida todavía no aparece, la app la busca en el momento dentro de esa carpeta.
+> **Carpetas por código**: las fotos están en una carpeta con lo que va antes del guion, directamente o en subcarpetas: `839B-6` → `…/839B/PRINCIPAL/839B-6.png`. Al arrancar, la app lee solo los primeros niveles del Drive (hasta las carpetas de cada modelo) y cada código lo busca en el momento dentro de su carpeta, así sirve aunque el Drive tenga decenas de miles de carpetas. Los `.psd`, `.ai` y videos se ignoran.
 
 ---
 
@@ -57,7 +57,7 @@ Usa **una** de las dos: `GOOGLE_SERVICE_ACCOUNT_JSON` o `GOOGLE_API_KEY`. Si pon
 | `MAX_CODES` | `150` | Límite máximo de códigos por PDF. |
 | `IMG_MAX_PX` | `900` | Resolución máxima de lado para las fotos en el PDF. |
 | `JPEG_QUALITY` | `80` | Calidad de compresión JPEG (1-100). |
-| `INDEX_TTL_SECONDS` | `300` | Tiempo en segundos de caché del listado de fotos de Drive. |
+| `INDEX_TTL_SECONDS` | `1800` | Cada cuántos segundos se vuelve a leer el mapa de carpetas del Drive (las fotos de cada código se revisan en el momento). |
 | `PDF_TTL_HOURS` | `24` | Horas antes de eliminar los PDFs temporales generados. |
 
 ---
