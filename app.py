@@ -63,7 +63,7 @@ ACCESS_CODE = os.getenv("ACCESS_CODE", "")
 MAX_CODES = _int("MAX_CODES", 150)
 IMG_MAX_PX = _int("IMG_MAX_PX", 900)
 JPEG_QUALITY = _int("JPEG_QUALITY", 80)
-INDEX_TTL = _int("INDEX_TTL_SECONDS", 300)
+INDEX_TTL = _int("INDEX_TTL_SECONDS", 1800)
 PDF_TTL_HOURS = _int("PDF_TTL_HOURS", 24)
 
 CO_TZ = dt.timezone(dt.timedelta(hours=-5))  # Colombia no tiene horario de verano
