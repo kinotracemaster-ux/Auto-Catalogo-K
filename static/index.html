@@ -244,7 +244,7 @@ details[open] summary::after{transform:rotate(-135deg)}
       res.append(el('h2', { text: 'No se pudo generar' }), el('p', { class: 'stats', text: data.message || 'Intenta de nuevo.' }));
     }
     if (data.missing && data.missing.length)
-      res.append(codeList('Sin foto', data.missing, 'warn', 'Revisa que el código esté escrito igual al nombre de la foto en el Drive.'));
+      res.append(codeList('Sin foto', data.missing, 'warn', 'Revisa que el código esté escrito igual al nombre de la foto en el Drive. Si acabas de subir la foto, vuelve a generar en un minuto.'));
     if (data.errors && data.errors.length)
       res.append(codeList('Foto que no se pudo leer', data.errors, 'bad', 'El archivo puede estar dañado o no ser una imagen compatible.'));
     box.append(res);
