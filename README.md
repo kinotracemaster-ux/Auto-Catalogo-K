@@ -11,6 +11,7 @@ Aplicación web rápida y moderna para generar catálogos de productos en PDF (f
 3. **Optimización con Pillow**: Las fotos se redimensionan en segundo plano con algoritmo Lanczos y compresión JPEG optimizada, almacenándose en una caché temporal para que la generación sea instantánea.
 4. **Construcción del PDF con ReportLab**: Se ensambla un PDF limpio en cuadrícula configurable (4, 6, 9 o 12 fotos por hoja), con el color de marca, título del catálogo, fecha, logo y pie de página. Tocar una foto la abre en Drive y debajo de cada una va **Descargar foto**, que baja la original (se puede quitar en *Opciones*). Los enlaces le sirven a cualquiera si la carpeta está compartida como "Cualquier persona con el enlace".
 5. **Reporte y Descarga**: La app informa de inmediato si hubo códigos sin foto y permite visualizar o descargar el archivo PDF generado. Al final, el botón **Generar enlaces de todas las fotos** muestra la lista con el enlace de Drive de cada foto (abrir y descargar) y un botón para copiarlos todos.
+6. **Solo enlaces de Drive**: debajo de *Generar PDF* está el botón **Generar enlaces de Drive**, que no arma el PDF ni baja las fotos: solo busca cada código y muestra aparte, en su propio resultado, el enlace original de Drive de cada foto (abrir y descargar), con botones para copiarlos y la lista de códigos sin foto. Es mucho más rápido y acepta hasta `MAX_LINK_CODES` códigos (500 por defecto).
 
 > **Carpetas por código**: las fotos están en una carpeta con lo que va antes del guion, directamente o en subcarpetas: `839B-6` → `…/839B/PRINCIPAL/839B-6.png`. Al arrancar, la app lee solo los primeros niveles del Drive (hasta las carpetas de cada modelo) y cada código lo busca en el momento dentro de su carpeta, así sirve aunque el Drive tenga decenas de miles de carpetas. Los `.psd`, `.ai` y videos se ignoran.
 
@@ -55,6 +56,7 @@ Usa **una** de las dos: `GOOGLE_SERVICE_ACCOUNT_JSON` o `GOOGLE_API_KEY`. Si pon
 | `BRAND_NAME` | *(vacío)* | Nombre de la marca o empresa en el pie de página. |
 | `FOOTER_TEXT` | *(vacío)* | Texto en el pie de página del PDF (ej: *Pedidos WhatsApp +57 300 000 0000*). |
 | `MAX_CODES` | `150` | Límite máximo de códigos por PDF. |
+| `MAX_LINK_CODES` | `500` | Límite de códigos del botón *Generar enlaces de Drive*. |
 | `IMG_MAX_PX` | `900` | Resolución máxima de lado para las fotos en el PDF. |
 | `JPEG_QUALITY` | `80` | Calidad de compresión JPEG (1-100). |
 | `INDEX_TTL_SECONDS` | `1800` | Cada cuántos segundos se vuelve a leer el mapa de carpetas del Drive (las fotos de cada código se revisan en el momento). |

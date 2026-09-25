@@ -79,6 +79,10 @@ details[open] summary::after{transform:rotate(-135deg)}
 .links b{font:600 14px ui-monospace,SFMono-Regular,Menlo,monospace;min-width:0;overflow-wrap:anywhere}
 .links a{color:var(--ink);font-weight:600;padding:4px 0}
 .links a.dim{color:var(--muted);font-weight:500}
+.second{width:100%;min-height:50px;margin-top:10px;border:1.5px solid var(--ink);border-radius:14px;background:#fff;color:var(--ink);cursor:pointer;
+  display:flex;align-items:center;justify-content:center;gap:10px;font:700 17px "Saira Condensed",Barlow,sans-serif;letter-spacing:.05em;text-transform:uppercase}
+.second:disabled{opacity:.7;cursor:progress}
+#linksResult:empty{display:none}
 [hidden]{display:none!important}
 </style>
 </head>
@@ -118,9 +122,11 @@ details[open] summary::after{transform:rotate(-135deg)}
     </details>
 
     <button id="go" class="primary" type="button"><span class="spin" hidden></span><span id="goText">Generar PDF</span></button>
+    <button id="goLinks" class="second" type="button"><span class="spin" hidden></span><span id="goLinksText">Generar enlaces de Drive</span></button>
   </section>
 
   <section id="result" aria-live="polite"></section>
+  <section id="linksResult" aria-live="polite"></section>
 </main>
 
 <script>
@@ -130,7 +136,7 @@ details[open] summary::after{transform:rotate(-135deg)}
     get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
     set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
   };
-  let cfg = { max_codes: 150, requires_code: false, layouts: [4, 6, 9, 12], title: 'Catálogo' };
+  let cfg = { max_codes: 150, max_link_codes: 500, requires_code: false, layouts: [4, 6, 9, 12], title: 'Catálogo' };
   let perPage = 6;
 
   function el(tag, attrs = {}, ...kids) {
@@ -256,9 +262,12 @@ details[open] summary::after{transform:rotate(-135deg)}
   function linkList(photos) {
     const n = photos.length;
     const lines = photos.map(p => `${p.code}: ${p.view}`);
+    const dls = photos.map(p => `${p.code}: ${p.download}`);
     return el('div', { class: 'linklist' },
       el('h3', { text: `Enlaces de las fotos (${n})` }),
-      el('div', { class: 'btns' }, copyButton('Copiar todos los enlaces', lines.join('\n'), 'btn solid')),
+      el('div', { class: 'btns' }, copyButton('Copiar todos los enlaces', lines.join('\n'), 'btn solid'),
+        copyButton('Copiar enlaces de descarga', dls.join('\n'), 'btn half'),
+        copyButton('Copiar solo enlaces', photos.map(p => p.view).join('\n'), 'btn half')),
       el('ul', { class: 'links' }, photos.map(p => el('li', {},
         el('b', { text: p.code }),
         el('a', { href: p.view, target: '_blank', rel: 'noopener', text: 'Abrir en Drive' }),
@@ -313,7 +322,7 @@ details[open] summary::after{transform:rotate(-135deg)}
     store.set('cat_title', title);
     if (cfg.requires_code) store.set('cat_access', $('#access').value);
     busy = true;
-    $('#go').disabled = true; $('.spin').hidden = false; $('#goText').textContent = 'Buscando fotos y armando el PDF…';
+    $('#go').disabled = true; $('#go .spin').hidden = false; $('#goText').textContent = 'Buscando fotos y armando el PDF…';
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), 240000);
     try {
@@ -330,14 +339,68 @@ details[open] summary::after{transform:rotate(-135deg)}
       fail(e.name === 'AbortError' ? 'Se demoró demasiado. Prueba con menos códigos.' : 'No hay conexión con el servidor. Revisa tu internet e intenta de nuevo.');
     } finally {
       clearTimeout(timer); busy = false;
-      $('#go').disabled = false; $('.spin').hidden = true; $('#goText').textContent = 'Generar PDF';
+      $('#go').disabled = false; $('#go .spin').hidden = true; $('#goText').textContent = 'Generar PDF';
+    }
+  }
+
+  // Boton aparte: solo los enlaces originales de Drive, sin armar el PDF
+  function renderLinks(data) {
+    const box = $('#linksResult');
+    box.replaceChildren();
+    const res = el('div', { class: 'res' });
+    if (data.ok) {
+      const n = data.photos.length;
+      res.append(el('h2', { text: 'Enlaces de Drive' }),
+        el('p', { class: 'stats', text: `${n} ${n === 1 ? 'foto encontrada' : 'fotos encontradas'}. Sirven si la carpeta está compartida como "Cualquier persona con el enlace".` }));
+      const list = linkList(data.photos);
+      list.style.cssText = 'margin-top:0;border-top:0;padding-top:0';
+      list.querySelector('h3').remove();
+      res.append(list);
+    } else {
+      res.append(el('h2', { text: 'No se pudieron generar' }), el('p', { class: 'stats', text: data.message || 'Intenta de nuevo.' }));
+    }
+    if (data.missing && data.missing.length)
+      res.append(codeList('Sin foto', data.missing, 'warn', 'Revisa que el código esté escrito igual al nombre de la foto en el Drive.'));
+    box.append(res);
+    res.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion:reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  }
+
+  let busyLinks = false;
+  async function generateLinks() {
+    if (busyLinks) return;
+    const codes = $('#codes').value;
+    const n = countCodes(codes);
+    if (!n) { renderLinks({ ok: false, message: 'Pega al menos un código.' }); $('#codes').focus(); return; }
+    if (n > cfg.max_link_codes) { renderLinks({ ok: false, message: `Máximo ${cfg.max_link_codes} códigos para enlaces. Divide la lista.` }); return; }
+    if (cfg.requires_code) store.set('cat_access', $('#access').value);
+    busyLinks = true;
+    const btn = $('#goLinks'), spin = btn.querySelector('.spin');
+    btn.disabled = true; spin.hidden = false; $('#goLinksText').textContent = 'Buscando enlaces…';
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 180000);
+    try {
+      const r = await fetch('/api/links', {
+        method: 'POST', signal: ctl.signal,
+        headers: { 'Content-Type': 'application/json', 'X-Access-Code': $('#access').value },
+        body: JSON.stringify({ codes }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (r.status === 401) { renderLinks({ ok: false, message: 'La clave de acceso no es correcta.' }); $('#access').focus(); }
+      else if (!r.ok) renderLinks({ ok: false, message: typeof data.detail === 'string' ? data.detail : 'Algo falló en el servidor. Intenta de nuevo.' });
+      else renderLinks(data);
+    } catch (e) {
+      renderLinks({ ok: false, message: e.name === 'AbortError' ? 'Se demoró demasiado. Prueba con menos códigos.' : 'No hay conexión con el servidor. Revisa tu internet e intenta de nuevo.' });
+    } finally {
+      clearTimeout(timer); busyLinks = false;
+      btn.disabled = false; spin.hidden = true; $('#goLinksText').textContent = 'Generar enlaces de Drive';
     }
   }
 
   $('#codes').addEventListener('input', updateCount);
   $('#codes').addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') generate(); });
-  $('#clear').addEventListener('click', () => { $('#codes').value = ''; updateCount(); $('#result').replaceChildren(); $('#codes').focus(); });
+  $('#clear').addEventListener('click', () => { $('#codes').value = ''; updateCount(); $('#result').replaceChildren(); $('#linksResult').replaceChildren(); $('#codes').focus(); });
   $('#go').addEventListener('click', generate);
+  $('#goLinks').addEventListener('click', generateLinks);
   init();
 })();
 </script>
