@@ -61,6 +61,7 @@ if not re.fullmatch(r"#[0-9A-Fa-f]{6}", BRAND_COLOR):
 FOOTER_TEXT = os.getenv("FOOTER_TEXT", "")
 ACCESS_CODE = os.getenv("ACCESS_CODE", "")
 MAX_CODES = _int("MAX_CODES", 150)
+MAX_LINK_CODES = max(_int("MAX_LINK_CODES", 500), MAX_CODES)  # solo enlaces: no baja fotos, aguanta mas
 IMG_MAX_PX = _int("IMG_MAX_PX", 900)
 JPEG_QUALITY = _int("JPEG_QUALITY", 80)
 INDEX_TTL = _int("INDEX_TTL_SECONDS", 1800)
@@ -217,6 +218,7 @@ def config():
         "brand_color": BRAND_COLOR,
         "requires_code": bool(ACCESS_CODE),
         "max_codes": MAX_CODES,
+        "max_link_codes": MAX_LINK_CODES,
         "layouts": list(LAYOUTS),
         "has_logo": LOGO.is_file(),
     }
@@ -327,6 +329,44 @@ def build(req: BuildRequest, x_access_code: str = Header(default="")):
         }
     finally:
         _slots.release()
+
+
+class LinksRequest(BaseModel):
+    codes: str = Field("", max_length=60000)
+
+
+@app.post("/api/links")
+def links(req: LinksRequest, x_access_code: str = Header(default="")):
+    """Solo los enlaces originales de Drive de cada foto, sin armar el PDF (no baja ninguna foto)."""
+    if not authorized(x_access_code):
+        raise HTTPException(401, "Clave de acceso incorrecta.")
+    items = parse_codes(req.codes)
+    if not items:
+        return {"ok": False, "message": "Pega al menos un código."}
+    if len(items) > MAX_LINK_CODES:
+        return {"ok": False, "message": f"Máximo {MAX_LINK_CODES} códigos para enlaces (pegaste {len(items)}). Divide la lista."}
+    try:
+        idx = get_index()
+        found, _ = idx.lookup([i["key"] for i in items])
+    except SourceError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Drive")
+        raise HTTPException(502, "No pude conectar con el Drive. Intenta de nuevo.") from exc
+
+    src = idx.source
+    photos = [
+        {"code": found[i["key"]].code, "view": src.view_link(found[i["key"]].photo),
+         "download": src.download_link(found[i["key"]].photo)}
+        for i in items if i["key"] in found
+    ]
+    photos = [p for p in photos if p["view"]]
+    missing = [i["code"] for i in items if i["key"] not in found]
+    log.info("Enlaces: %d fotos, %d sin foto", len(photos), len(missing))
+    if not photos:
+        msg = "Las fotos no están en Drive, no tienen enlace." if found else "No encontré fotos para esos códigos."
+        return {"ok": False, "message": msg, "missing": missing}
+    return {"ok": True, "photos": photos, "missing": missing}
 
 
 @app.get("/pdf/{pid}/{filename}")
