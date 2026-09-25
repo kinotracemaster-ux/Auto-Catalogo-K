@@ -75,10 +75,11 @@ details[open] summary::after{transform:rotate(-135deg)}
 .linklist{margin-top:16px;border-top:1px solid var(--line);padding-top:14px}
 .linklist h3{margin:0 0 10px;font:700 20px/1.1 "Saira Condensed",Barlow,sans-serif;text-transform:uppercase}
 .links{list-style:none;margin:12px 0 0;padding:0;border-top:1px solid var(--line)}
-.links li{display:grid;grid-template-columns:1fr auto auto;align-items:baseline;gap:4px 16px;padding:10px 0;border-bottom:1px solid var(--line)}
-.links b{font:600 14px ui-monospace,SFMono-Regular,Menlo,monospace;min-width:0;overflow-wrap:anywhere}
-.links a{color:var(--ink);font-weight:600;padding:4px 0}
-.links a.dim{color:var(--muted);font-weight:500}
+.links li{display:grid;grid-template-columns:1fr 1fr;align-items:center;gap:8px;padding:12px 0;border-bottom:1px solid var(--line)}
+.links b{grid-column:1/-1;font:600 14px ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+.links input.url{grid-column:1/-1;min-width:0;width:100%;border:1.5px solid var(--line);border-radius:10px;padding:9px 10px;background:#fcfcfd;color:var(--ink);
+  font:500 13px ui-monospace,SFMono-Regular,Menlo,monospace}
+.links .btn{min-height:40px;font-size:15px}
 .second{width:100%;min-height:50px;margin-top:10px;border:1.5px solid var(--ink);border-radius:14px;background:#fff;color:var(--ink);cursor:pointer;
   display:flex;align-items:center;justify-content:center;gap:10px;font:700 17px "Saira Condensed",Barlow,sans-serif;letter-spacing:.05em;text-transform:uppercase}
 .second:disabled{opacity:.7;cursor:progress}
@@ -266,12 +267,24 @@ details[open] summary::after{transform:rotate(-135deg)}
     return el('div', { class: 'linklist' },
       el('h3', { text: `Enlaces de las fotos (${n})` }),
       el('div', { class: 'btns' }, copyButton('Copiar todos los enlaces', lines.join('\n'), 'btn solid'),
-        copyButton('Copiar enlaces de descarga', dls.join('\n'), 'btn half'),
-        copyButton('Copiar solo enlaces', photos.map(p => p.view).join('\n'), 'btn half')),
-      el('ul', { class: 'links' }, photos.map(p => el('li', {},
-        el('b', { text: p.code }),
-        el('a', { href: p.view, target: '_blank', rel: 'noopener', text: 'Abrir en Drive' }),
-        el('a', { class: 'dim', href: p.download, target: '_blank', rel: 'noopener', text: 'Descargar' })))));
+        el('button', { type: 'button', class: 'btn half', text: 'Compartir todos', onclick: () => shareText(lines.join('\n')) }),
+        copyButton('Copiar enlaces de descarga', dls.join('\n'), 'btn half')),
+      el('ul', { class: 'links' }, photos.map(p => {
+        const url = el('input', { class: 'url', type: 'text', readonly: '', value: p.view, 'aria-label': 'Enlace de ' + p.code });
+        url.addEventListener('focus', () => url.select());
+        return el('li', {},
+          el('b', { text: p.code }),
+          url,
+          copyButton('Copiar', p.view, 'btn'),
+          el('button', { type: 'button', class: 'btn', text: 'Compartir', onclick: () => shareText(`${p.code}: ${p.view}`) }));
+      })));
+  }
+
+  // Compartir un texto con enlaces (menu de compartir del celular; si no hay, WhatsApp)
+  async function shareText(text) {
+    try { if (navigator.share) { await navigator.share({ text }); return; } }
+    catch (e) { if (e && e.name === 'AbortError') return; }
+    window.open('https://wa.me/?text=' + encodeURIComponent(text), '_blank', 'noopener');
   }
 
   function render(data, title) {
